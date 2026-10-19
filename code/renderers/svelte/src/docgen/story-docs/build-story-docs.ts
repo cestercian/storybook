@@ -53,21 +53,18 @@ export async function buildStoryDocsPayload(
   const templates = new Map<string, { code: string; description?: string }>();
   const snippets = new Map<string, string>();
   let csfSource = source;
+  let typescript = /\.(?:ts|tsx|mts|cts)$/.test(filename);
   let instanceScript: { code: string; typescript: boolean } | undefined;
   if (filename.endsWith('.svelte')) {
     const ast = getSvelteAST({ code: source, filename });
+    typescript = isTypeScript(ast.module) || isTypeScript(ast.instance);
     if (ast.instance) {
       instanceScript = {
         code: source.slice(
           position(ast.instance.content).start,
           position(ast.instance.content).end
         ),
-        typescript: ast.instance.attributes.some(
-          (attribute) =>
-            attribute.name === 'lang' &&
-            Array.isArray(attribute.value) &&
-            attribute.value.some((value) => value.type === 'Text' && value.data === 'ts')
-        ),
+        typescript,
       };
     }
     const nodes = await extractSvelteASTNodes({ ast, filename });
@@ -201,9 +198,9 @@ export async function buildStoryDocsPayload(
           importOverride,
           instanceScript: filename.endsWith('.svelte')
             ? instanceScript
-            : { code: babelPrint(csf._file.path.node), typescript: true },
+            : { code: babelPrint(csf._file.path.node), typescript },
           ...(filename.endsWith('.svelte')
-            ? { moduleScript: { code: babelPrint(csf._file.path.node), typescript: true } }
+            ? { moduleScript: { code: babelPrint(csf._file.path.node), typescript } }
             : {}),
         })
       : undefined;
@@ -243,4 +240,15 @@ function position(node: object): { start: number; end: number } {
     return { start: node.start, end: node.end };
   }
   throw new TypeError('Svelte AST node has no source positions');
+}
+
+function isTypeScript(script: ReturnType<typeof getSvelteAST>['module']): boolean {
+  return (
+    script?.attributes.some(
+      (attribute) =>
+        attribute.name === 'lang' &&
+        Array.isArray(attribute.value) &&
+        attribute.value.some((value) => value.type === 'Text' && value.data === 'ts')
+    ) ?? false
+  );
 }

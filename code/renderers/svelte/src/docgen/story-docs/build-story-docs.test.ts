@@ -159,3 +159,57 @@ it('preserves distinct module and instance bindings in valid Svelte stories', as
   expect(payload?.stories['example--default']?.warning).toBeUndefined();
   expect(() => compile(snippet ?? '', { generate: 'server' })).not.toThrow();
 });
+
+it.each(['js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts'])(
+  'uses the source language when copying declarations from plain CSF .%s',
+  async (extension) => {
+    const storyEntry = { ...entry, importPath: resolve(`input.stories.${extension}`) };
+    vol.fromJSON({
+      [storyEntry.importPath]: `import Button from './Button.svelte';
+        const value = () => 'label';
+        export default { title: 'Example', component: Button };
+        export const Default = { args: { label: value() } };`,
+    });
+    const payload = await buildStoryDocsPayload(
+      { entry: storyEntry },
+      { readDocgen: async () => undefined }
+    );
+    const snippet = payload?.stories['example--default']?.snippet;
+    expect(snippet).toContain("const value = () => 'label';");
+    expect(snippet?.split('\n')[0]).toBe(
+      ['ts', 'tsx', 'mts', 'cts'].includes(extension) ? '<script lang="ts">' : '<script>'
+    );
+    expect(() => compile(snippet ?? '', { generate: 'server' })).not.toThrow();
+  }
+);
+
+it.each([
+  ['', '', false],
+  [' lang="ts"', '', true],
+  ['', ' lang="ts"', true],
+])(
+  'uses both Svelte script languages for copied declarations: %s / %s',
+  async (moduleLang, instanceLang, typescript) => {
+    const storyEntry = { ...entry, importPath: resolve('input.stories.svelte') };
+    vol.fromJSON({
+      [storyEntry.importPath]: `<script module${moduleLang}>
+      import { defineMeta } from '@storybook/svelte';
+      import Button from './Button.svelte';
+      const value${typescript ? ': () => string' : ''} = () => 'label';
+      const { Story } = defineMeta({ title: 'Example', component: Button, args: { label: value() } });
+    </script>
+    <script${instanceLang}>let count${typescript ? ': number' : ''} = 0;</script>
+    <Story name="Default" asChild><Button {...args}>{count}</Button></Story>`,
+    });
+    const payload = await buildStoryDocsPayload(
+      { entry: storyEntry },
+      { readDocgen: async () => undefined }
+    );
+    const snippet = payload?.stories['example--default']?.snippet;
+    expect(snippet).toContain('const value');
+    expect(snippet).toContain('let count');
+    expect(snippet).toContain(typescript ? '<script module lang="ts">' : '<script module>');
+    expect(snippet).toContain(typescript ? '<script lang="ts">' : '<script>');
+    expect(() => compile(snippet ?? '', { generate: 'server' })).not.toThrow();
+  }
+);
