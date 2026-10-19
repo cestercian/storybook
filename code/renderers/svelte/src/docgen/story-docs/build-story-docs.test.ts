@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve } from 'pathe';
+import { compile } from 'svelte/compiler';
 import { fs as memoryFs, vol } from 'memfs';
 import type { IndexEntry } from 'storybook/internal/types';
 
@@ -94,4 +95,67 @@ it('warns about an unknown identifier in the final markup', async () => {
     { readDocgen: async () => undefined }
   );
   expect(payload?.stories['example--default']?.warning).toBe('Identifier not resolved: `missing`.');
+});
+
+it.each([
+  ['native', '', '<button {...args}>Save</button>', '<button>Save</button>'],
+  ['component', "import Button from './Button.svelte';", '<Button {...args} />', '<Button />'],
+])('omits chained mocks from a %s Svelte CSF snippet', async (_, imports, markup, expected) => {
+  const svelteEntry = { ...entry, importPath: resolve('input.stories.svelte') };
+  vol.fromJSON({
+    [svelteEntry.importPath]: `<script module>
+      import { defineMeta } from '@storybook/svelte';
+      import { fn as mock } from 'storybook/test';
+      ${imports}
+      const { Story } = defineMeta({ title: 'Example', args: { x: mock().mockName('x').mockReturnValue(1) } });
+    </script>
+    <Story name="Default" asChild>${markup}</Story>`,
+  });
+  const payload = await buildStoryDocsPayload(
+    { entry: svelteEntry },
+    { readDocgen: async () => undefined }
+  );
+  const snippet = payload?.stories['example--default']?.snippet;
+  expect(snippet).toContain(expected);
+  expect(snippet).not.toContain('x=');
+  expect(snippet).not.toContain('storybook/test');
+  expect(snippet).not.toContain('mock');
+});
+
+it('preserves a chained factory that is not a storybook mock', async () => {
+  vol.fromJSON({
+    [entry.importPath]: `import Button from './Button.svelte';
+import { fn } from 'custom-factory';
+export default { title: 'Example', component: Button };
+export const Default = { args: { x: fn().mockName('x') } };`,
+  });
+  const payload = await buildStoryDocsPayload({ entry }, { readDocgen: async () => undefined });
+  expect(payload?.stories['example--default']?.snippet).toContain("x={fn().mockName('x')}");
+  expect(payload?.stories['example--default']?.snippet).toContain("from 'custom-factory'");
+});
+
+it('preserves distinct module and instance bindings in valid Svelte stories', async () => {
+  const svelteEntry = { ...entry, importPath: resolve('input.stories.svelte') };
+  const source = `<script module>
+    import { defineMeta } from '@storybook/svelte';
+    import Button from './Button.svelte';
+    const label = 'module';
+    const moduleValue = () => label;
+    const { Story } = defineMeta({ title: 'Example', component: Button, args: { value: moduleValue() } });
+  </script>
+  <script>let label = 'instance';</script>
+  <Story name="Default" asChild><Button {...args}>{label}</Button></Story>`;
+  expect(() => compile(source, { generate: 'server' })).not.toThrow();
+  vol.fromJSON({ [svelteEntry.importPath]: source });
+  const payload = await buildStoryDocsPayload(
+    { entry: svelteEntry },
+    { readDocgen: async () => undefined }
+  );
+  const snippet = payload?.stories['example--default']?.snippet;
+  expect(snippet).toContain("let label = 'instance';");
+  expect(snippet).toContain("const _label = 'module';");
+  expect(snippet).toContain('() => _label');
+  expect(snippet).toContain('{label}</Button>');
+  expect(payload?.stories['example--default']?.warning).toBeUndefined();
+  expect(() => compile(snippet ?? '', { generate: 'server' })).not.toThrow();
 });
